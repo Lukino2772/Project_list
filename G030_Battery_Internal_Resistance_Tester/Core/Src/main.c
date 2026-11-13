@@ -59,6 +59,68 @@ static void MX_I2C1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define LCD_RS 0x01U
+#define LCD_EN 0x04U
+#define LCD_BL 0x08U
+static uint16_t lcd_address;
+
+static void LCD_Raw(uint8_t b)
+{
+  (void)HAL_I2C_Master_Transmit(&hi2c1, lcd_address, &b, 1, 100);
+}
+static void LCD_Nibble(uint8_t n, uint8_t rs)
+{
+  uint8_t b = (uint8_t)((n & 0xF0U) | LCD_BL | rs);
+  LCD_Raw((uint8_t)(b | LCD_EN));
+  HAL_Delay(1);
+  LCD_Raw(b);
+  HAL_Delay(1);
+}
+static void LCD_Send(uint8_t b, uint8_t rs)
+{
+  LCD_Nibble(b, rs);
+  LCD_Nibble((uint8_t)(b << 4), rs);
+}
+static void LCD_Cmd(uint8_t c)
+{
+  LCD_Send(c, 0);
+  if (c == 0x01U || c == 0x02U) HAL_Delay(2);
+}
+static void LCD_Print(const char *p)
+{
+  while (*p) LCD_Send((uint8_t)*p++, LCD_RS);
+}
+static uint8_t LCD_Detect(void)
+{
+  /* Common PCF8574/PCF8574A backpack address range. */
+  for (uint8_t a = 0x20U; a <= 0x3FU; a++)
+  {
+    if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(a << 1), 2, 20) == HAL_OK)
+    {
+      lcd_address = (uint16_t)(a << 1);
+      return 1;
+    }
+  }
+  return 0;
+}
+static void LCD_Init(void)
+{
+  HAL_Delay(50);
+  LCD_Raw(LCD_BL);
+  HAL_Delay(50);
+  LCD_Nibble(0x30, 0);
+  HAL_Delay(5);
+  LCD_Nibble(0x30, 0);
+  HAL_Delay(2);
+  LCD_Nibble(0x30, 0);
+  LCD_Nibble(0x20, 0);
+  LCD_Cmd(0x28);
+  LCD_Cmd(0x08);
+  LCD_Cmd(0x01);
+  LCD_Cmd(0x06);
+  LCD_Cmd(0x0C);
+}
+
 
 /* USER CODE END 0 */
 
@@ -94,6 +156,14 @@ int main(void)
   MX_ADC1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  if (LCD_Detect())
+  {
+    LCD_Init();
+    LCD_Cmd(0x80);
+    LCD_Print("STM32G030 READY");
+    LCD_Cmd(0xC0);
+    LCD_Print("LCD1602 I2C OK!");
+  }
 
   /* USER CODE END 2 */
 
