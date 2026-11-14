@@ -14,63 +14,95 @@
 
 extern I2C_HandleTypeDef hi2c1;
 
-/* PB0 = ADC1_IN8 = powered ZIF14 side of 47-ohm resistor.
- * The resistor's upstream rail MUST match MCU VDDA for this calculation.
- * STM32F401xC factory VREFINT calibration word at 0x1FFF7A2A (3.3V).
- * No-load calibration requires EMPTY socket, held StartKey for >=2 seconds.
- * Software current checks are diagnostic; they cannot replace hardware
- * current limiting or protect against an instantaneous short.
+/* PB0/ADC1_IN8 measures DUT VCC downstream of the 47-ohm resistor.
+ * Current estimate requires resistor upstream supply == VDDA. Real analog
+ * current limiting is still required for short-circuit protection.
+ * VREFINT factory-calibrated at 3.3V on STM32F401xC.
  */
 extern ADC_HandleTypeDef hadc1;
-#define HC_R_MOHM 47000L       /* 47 ohms expressed in milliohms */
-#define HC_MAX_CURRENT_UA 10000L  /* nominal trip threshold 10mA */
+#define HC_R_OHMS 47L
 #define HC_MIN_DUT_MV 2700L
-#define VREFINT_CAL_F401 (*(const uint16_t *)0x1FFF7A2AU)
-static int32_t zero_drop_mv;
-static int32_t last_current_ua;
+#define HC_VREFINT_CAL (*(const uint16_t *)0x1FFF7A2AU)
+#define HC_ADC_SAMPLES 32u
+#define HC_ADC_TRIM 4u
+
+static const uint16_t limit_options_ma[] = {3u,5u,8u,10u};
+static uint8_t limit_index=3u;
+static int32_t zero_drop_uv;      /* signed empty-socket offset */
+static int32_t no_load_raw_ua;    /* uncorrected empty-socket current */
+static int32_t last_current_ua;   /* after no-load zero correction */
 static int32_t last_dut_mv;
 static int32_t last_vdda_mv;
+static uint8_t zero_valid;
 static uint8_t current_fault;
 
-static uint8_t adc_average(uint32_t channel, uint32_t *value) {
-  ADC_ChannelConfTypeDef cfg = {0};
+/* Discard the four lowest and highest 12-bit readings from a 32-sample batch.
+ * Averaging in ADC counts preserves sub-millivolt resolution until conversion.
+ */
+static uint8_t adc_filtered(uint32_t channel, uint32_t *mean_x256) {
+  ADC_ChannelConfTypeDef cfg={0};
+  uint16_t values[HC_ADC_SAMPLES];
   uint32_t sum=0;
-  uint8_t i;
+  uint16_t lo,hi;
+  unsigned i,j;
   cfg.Channel=channel;
   cfg.Rank=1;
   cfg.SamplingTime=ADC_SAMPLETIME_480CYCLES;
   if(HAL_ADC_ConfigChannel(&hadc1,&cfg)!=HAL_OK)return 0;
-  for(i=0;i<16;i++) {
+  for(i=0;i<HC_ADC_SAMPLES;i++) {
     if(HAL_ADC_Start(&hadc1)!=HAL_OK)return 0;
-    if(HAL_ADC_PollForConversion(&hadc1,10)!=HAL_OK) {
-      (void)HAL_ADC_Stop(&hadc1); return 0;
+    if(HAL_ADC_PollForConversion(&hadc1,20)!=HAL_OK) {
+      (void)HAL_ADC_Stop(&hadc1);
+      return 0;
     }
-    sum+=HAL_ADC_GetValue(&hadc1);
+    values[i]=(uint16_t)HAL_ADC_GetValue(&hadc1);
     if(HAL_ADC_Stop(&hadc1)!=HAL_OK)return 0;
   }
-  *value=(sum+8u)/16u;
+  /* Insertion sort is cheap for 32 elements and rejects ADC glitches. */
+  for(i=1;i<HC_ADC_SAMPLES;i++) {
+    uint16_t x=values[i];
+    j=i;
+    while(j>0 && values[j-1]>x) {values[j]=values[j-1];j--;}
+    values[j]=x;
+  }
+  lo=values[HC_ADC_TRIM];
+  hi=values[HC_ADC_SAMPLES-HC_ADC_TRIM-1u];
+  if((unsigned)(hi-lo)>160u)return 0; /* unstable analogue signal */
+  for(i=HC_ADC_TRIM;i<HC_ADC_SAMPLES-HC_ADC_TRIM;i++)sum+=values[i];
+  *mean_x256=(sum*256u+12u)/24u;
   return 1;
 }
 static uint8_t read_current(void) {
-  uint32_t ref_raw,pin_raw;
-  const uint32_t cal=VREFINT_CAL_F401;
-  int32_t drop;
+  uint32_t vref_x256,pin_x256;
+  uint32_t cal=(uint32_t)HC_VREFINT_CAL;
+  int32_t drop_uv;
   if(cal<500u || cal>2500u)return 0;
-  if(!adc_average(ADC_CHANNEL_VREFINT,&ref_raw) || ref_raw<500u)return 0;
-  if(!adc_average(ADC_CHANNEL_8,&pin_raw))return 0;
-  last_vdda_mv=(int32_t)((3300u*cal+ref_raw/2u)/ref_raw);
-  if(last_vdda_mv<2800 || last_vdda_mv>3600)return 0;
-  last_dut_mv=(int32_t)((pin_raw*(uint32_t)last_vdda_mv+2047u)/4095u);
-  drop=last_vdda_mv-last_dut_mv-zero_drop_mv;
-  last_current_ua=(drop>0)?(drop*1000000L/47000L):0L;
+  if(!adc_filtered(ADC_CHANNEL_VREFINT,&vref_x256)||vref_x256<128000u)return 0;
+  if(!adc_filtered(ADC_CHANNEL_8,&pin_x256))return 0;
+  last_vdda_mv=(int32_t)((3300u*cal*256u+vref_x256/2u)/vref_x256);
+  if(last_vdda_mv<2800L || last_vdda_mv>3600L)return 0;
+  last_dut_mv=(int32_t)(((uint64_t)pin_x256*(uint32_t)last_vdda_mv+
+                        (4095u*256u)/2u)/(4095u*256u));
+  drop_uv=(int32_t)(((int64_t)((4095u*256u)-pin_x256)*
+             last_vdda_mv*1000L)/(4095u*256u));
+  if(drop_uv< -20000L || drop_uv>1500000L)return 0;
+  last_current_ua=(drop_uv-(zero_valid?zero_drop_uv:0L))/HC_R_OHMS;
+  if(last_current_ua<0L)last_current_ua=0L;
   return 1;
 }
 static uint8_t current_ok(void) {
-  if(!read_current() || last_current_ua>HC_MAX_CURRENT_UA ||
-      last_dut_mv<HC_MIN_DUT_MV) {
-    current_fault=1; return 0;
+  if(!read_current() ||
+    last_current_ua>(int32_t)limit_options_ma[limit_index]*1000L ||
+    last_dut_mv<HC_MIN_DUT_MV) {
+    current_fault=1;
+    return 0;
   }
   return 1;
+}
+static void current_label(char *out,size_t size,int32_t ua) {
+  if(ua<0)ua=0;
+  (void)snprintf(out,size,"%ld.%02ldmA",(long)(ua/1000L),
+                 (long)((ua%1000L)/10L));
 }
 
 typedef struct { GPIO_TypeDef *port; uint16_t mask; } IO;
@@ -274,26 +306,51 @@ static void lcd_line(uint8_t row,const char *s) {
   }
 }
 
+/* Hold StartKey 2-5 seconds. The socket must be EMPTY.
+ * No-load reading is displayed before correcting the measurement to zero.
+ */
 void HC_Tester_Calibrate(void) {
   uint8_t i;
-  int32_t sum=0;
+  int64_t total_uv=0;
+  int32_t new_zero_uv;
+  char msg[17];
   all_safe();
-  lcd_line(0,"REMOVE IC FIRST");
-  lcd_line(1,"CALIBRATING...");
-  HAL_Delay(600);
-  zero_drop_mv=0;
-  for(i=0;i<16;i++) {
-    if(!read_current() || last_dut_mv<3000) {
-      zero_drop_mv=0;
-      lcd_line(0,"CALIBRATION FAIL");
-      lcd_line(1,"CHECK 3V3/ADC");
+  lcd_line(0,"EMPTY ZIF SOCKET");
+  lcd_line(1,"ZERO MEASURE...");
+  HAL_Delay(300);
+  zero_valid=0;
+  for(i=0;i<8;i++) {
+    int32_t measured_drop_uv;
+    if(!read_current() || last_dut_mv<3000L) {
+      lcd_line(0,"ZERO CAL FAILED");
+      lcd_line(1,"CHECK VCC/ADC");
       return;
     }
-    sum+=last_vdda_mv-last_dut_mv;
+    measured_drop_uv=last_current_ua*HC_R_OHMS;
+    if(measured_drop_uv< -10000L || measured_drop_uv>20000L) {
+      lcd_line(0,"NO-LOAD TOO HIGH");
+      lcd_line(1,"REMOVE CHIP");
+      return;
+    }
+    total_uv+=measured_drop_uv;
   }
-  zero_drop_mv=(sum>=0)?(sum+8)/16:(sum-8)/16;
-  lcd_line(0,"ZERO CAL DONE");
-  lcd_line(1,"EMPTY SOCKET OK");
+  new_zero_uv=(int32_t)(total_uv/8);
+  no_load_raw_ua=new_zero_uv/HC_R_OHMS;
+  zero_drop_uv=new_zero_uv;
+  zero_valid=1;
+  lcd_line(0,"NO LOAD (RAW)");
+  current_label(msg,sizeof(msg),no_load_raw_ua);
+  lcd_line(1,msg);
+}
+
+void HC_Tester_CycleLimit(void) {
+  char line[17];
+  limit_index=(uint8_t)((limit_index+1u)%
+                          (sizeof(limit_options_ma)/sizeof(limit_options_ma[0])));
+  lcd_line(0,"MAX DUT CURRENT");
+  snprintf(line,sizeof(line),"%umA (SOFTWARE)",
+           (unsigned)limit_options_ma[limit_index]);
+  lcd_line(1,line);
 }
 
 void HC_Tester_Init(void) {
@@ -329,7 +386,11 @@ void HC_Tester_Run(void) {
     lcd_line(1,"REMOVE DUT");
   } else if(matched==1) {
     lcd_line(0,"MATCH / PASS");
-    if(!read_current()) last_current_ua=0;
+    if(!read_current()) {
+      lcd_line(0,"ADC READ ERROR");
+      lcd_line(1,"CHECK ADC WIRING");
+      return;
+    }
     snprintf(label,sizeof(label),"%.7s %ld.%02ldmA",devices[first].name,
              (long)(last_current_ua/1000L),(long)((last_current_ua%1000L)/10L));
     lcd_line(1,label);
