@@ -399,13 +399,20 @@ void HC_Tester_Run(void) {
       lcd_line(1,"ADC READ ERROR");
       return;
     }
-    snprintf(label,sizeof(label),"I%ld.%02ld P%ld.%02ldmA",
-             (long)(last_current_ua/1000L),(long)((last_current_ua%1000L)/10L),
-             (long)(peak_current_ua/1000L),(long)((peak_current_ua%1000L)/10L));
+    /* Each value is limited to 0..99.99 mA for bounded LCD formatting. */
+    uint32_t idle_centi = (uint32_t)(last_current_ua > 99990L ? 99990L : last_current_ua)/10u;
+    uint32_t peak_centi = (uint32_t)(peak_current_ua > 99990L ? 99990L : peak_current_ua)/10u;
+    uint8_t idle_whole = (uint8_t)(idle_centi/100u);
+    uint8_t idle_frac = (uint8_t)(idle_centi%100u);
+    uint8_t peak_whole = (uint8_t)(peak_centi/100u);
+    uint8_t peak_frac = (uint8_t)(peak_centi%100u);
+    snprintf(label,sizeof(label),"I%u.%02u P%u.%02u",
+             (unsigned)idle_whole,(unsigned)idle_frac,
+             (unsigned)peak_whole,(unsigned)peak_frac);
     lcd_line(1,label);
   } else if(matched>1) {
     lcd_line(0,"MULTIPLE MATCHES");
-    snprintf(label,sizeof(label),"%u POSSIBLE TYPES",(unsigned)matched);
+    snprintf(label,sizeof(label),"%u MATCHES",(unsigned)matched);
     lcd_line(1,label);
   } else {
     lcd_line(0,"UNKNOWN / FAULT");
