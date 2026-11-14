@@ -22,6 +22,10 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include "hc_tester.h"
+#include <string.h>
+
+static uint8_t line_coding[7] = {0x00, 0xC2, 0x01, 0x00, 0, 0, 8};
 
 /* USER CODE END INCLUDE */
 
@@ -152,6 +156,7 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
 static int8_t CDC_Init_FS(void)
 {
   /* USER CODE BEGIN 3 */
+  HC_Tester_USBReset();
   /* Set Application Buffers */
   USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0);
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
@@ -166,6 +171,7 @@ static int8_t CDC_Init_FS(void)
 static int8_t CDC_DeInit_FS(void)
 {
   /* USER CODE BEGIN 4 */
+  HC_Tester_USBReset();
   return (USBD_OK);
   /* USER CODE END 4 */
 }
@@ -220,11 +226,11 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
   /* 6      | bDataBits  |   1   | Number Data bits (5, 6, 7, 8 or 16).          */
   /*******************************************************************************/
     case CDC_SET_LINE_CODING:
-
+    if (length == sizeof(line_coding)) memcpy(line_coding, pbuf, sizeof(line_coding));
     break;
 
     case CDC_GET_LINE_CODING:
-
+    if (length >= sizeof(line_coding)) memcpy(pbuf, line_coding, sizeof(line_coding));
     break;
 
     case CDC_SET_CONTROL_LINE_STATE:
@@ -261,6 +267,7 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  HC_Tester_USBReceive(Buf, *Len);
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
@@ -282,12 +289,20 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
 {
   uint8_t result = USBD_OK;
   /* USER CODE BEGIN 7 */
-  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
-  if (hcdc->TxState != 0){
-    return USBD_BUSY;
+  uint32_t mask = __get_PRIMASK();
+  __disable_irq();
+  USBD_CDC_HandleTypeDef *hcdc = hUsbDeviceFS.pClassData;
+  if (Len > sizeof(UserTxBufferFS) || hcdc == NULL ||
+      hUsbDeviceFS.dev_state != USBD_STATE_CONFIGURED) {
+    result = USBD_FAIL;
+  } else if (hcdc->TxState != 0U) {
+    result = USBD_BUSY;
+  } else {
+    memcpy(UserTxBufferFS, Buf, Len);
+    USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, Len);
+    result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
   }
-  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, Buf, Len);
-  result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
+  __set_PRIMASK(mask);
   /* USER CODE END 7 */
   return result;
 }

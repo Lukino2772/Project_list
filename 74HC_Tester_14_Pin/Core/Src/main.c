@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "hc_tester.h"
 
 /* USER CODE END Includes */
 
@@ -52,11 +53,6 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-void HC_Tester_Init(void);
-void HC_Tester_Run(void);
-void HC_Tester_Calibrate(void);
-void HC_Tester_CycleLimit(void);
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -107,25 +103,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
-    {
-      HAL_Delay(35);
-      if (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
-      {
-        uint32_t pressed_at = HAL_GetTick();
-        uint8_t long_press = 0;
-        while (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
-        {
-          if ((HAL_GetTick() - pressed_at) >= 2000u) long_press = 1;
-          HAL_Delay(10);
-        }
-        HAL_Delay(35);
-        uint32_t hold_ms = HAL_GetTick() - pressed_at;
-        if (hold_ms >= 5000u) HC_Tester_CycleLimit();
-        else if (long_press) HC_Tester_Calibrate(); /* EMPTY SOCKET ONLY */
-        else HC_Tester_Run();
-      }
-    }
+    HC_Tester_Poll();
   }
   /* USER CODE END 3 */
 }
@@ -239,6 +217,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(DUT_EN_GPIO_Port, DUT_EN_Pin, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = DUT_EN_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(DUT_EN_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : StartKey_Pin */
   GPIO_InitStruct.Pin = StartKey_Pin;

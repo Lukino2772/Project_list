@@ -1,115 +1,62 @@
 /*
  * 74HC 14-pin combinational IC identifier.
- * Assumptions: 1k series resistors on each ZIF signal, fixed 3.3V on pin 14,
- * GND on pin 7; test only known-compatible 14-pin CMOS at 3.3V.
- * All stimulus is open drain with weak internal pull-up to limit contention.
- *
- * Not a universal or safety-certified fault tester. An unknown chip can have
- * different power pins. Do NOT insert/remove while powered.
+ * Fixture uses 1 kOhm signal resistors and active-low socket power.
  */
 #include "main.h"
-#include <stdint.h>
+#include "hc_tester.h"
+#include "usbd_cdc_if.h"
 #include <string.h>
 #include <stdio.h>
 
 extern I2C_HandleTypeDef hi2c1;
 
-/* PB0/ADC1_IN8 measures DUT VCC downstream of the 47-ohm resistor.
- * Current estimate requires resistor upstream supply == VDDA. Real analog
- * current limiting is still required for short-circuit protection.
- * VREFINT factory-calibrated at 3.3V on STM32F401xC.
- */
-extern ADC_HandleTypeDef hadc1;
-#define HC_R_OHMS 47L
-#define HC_MIN_DUT_MV 2700L
-#define HC_VREFINT_CAL (*(const uint16_t *)0x1FFF7A2AU)
-#define HC_ADC_SAMPLES 32u
-#define HC_ADC_TRIM 4u
+enum { REQUEST_STATUS = 1, REQUEST_RUN = 2 };
+static volatile uint8_t requests;
+static char command[8];
+static uint8_t command_length, discard_command;
+static const char *result = "READY";
+static const char *part = "-";
+static unsigned matches;
 
-static const uint16_t limit_options_ma[] = {3u,5u,8u,10u};
-static uint8_t limit_index=3u;
-static int32_t zero_drop_uv;      /* signed empty-socket offset */
-static int32_t no_load_raw_ua;    /* uncorrected empty-socket current */
-static int32_t last_current_ua;   /* after no-load zero correction */
-static int32_t last_drop_uv;      /* signed uncorrected voltage drop */
-static int32_t peak_current_ua;   /* highest sampled for the current candidate */
-static int32_t last_dut_mv;
-static int32_t last_vdda_mv;
-static uint8_t zero_valid;
-static uint8_t current_fault;
+void HC_Tester_USBReset(void) {
+  requests=0;
+  command_length=discard_command=0;
+}
 
-/* Discard the four lowest and highest 12-bit readings from a 32-sample batch.
- * Averaging in ADC counts preserves sub-millivolt resolution until conversion.
- */
-static uint8_t adc_filtered(uint32_t channel, uint32_t *mean_x256) {
-  ADC_ChannelConfTypeDef cfg={0};
-  uint16_t values[HC_ADC_SAMPLES];
-  uint32_t sum=0;
-  uint16_t lo,hi;
-  unsigned i,j;
-  cfg.Channel=channel;
-  cfg.Rank=1;
-  cfg.SamplingTime=ADC_SAMPLETIME_480CYCLES;
-  if(HAL_ADC_ConfigChannel(&hadc1,&cfg)!=HAL_OK)return 0;
-  for(i=0;i<HC_ADC_SAMPLES;i++) {
-    if(HAL_ADC_Start(&hadc1)!=HAL_OK)return 0;
-    if(HAL_ADC_PollForConversion(&hadc1,20)!=HAL_OK) {
-      (void)HAL_ADC_Stop(&hadc1);
-      return 0;
+/* Called from USB context. Commands may span packets or share a packet. */
+void HC_Tester_USBReceive(const uint8_t *data, uint32_t length) {
+  for(uint32_t i=0;i<length;i++) {
+    uint8_t ch=data[i];
+    if(ch=='\n') {
+      if(!discard_command) {
+        if(command_length==3 && memcmp(command,"RUN",3)==0)
+          requests|=REQUEST_RUN;
+        if(command_length==6 && memcmp(command,"STATUS",6)==0)
+          requests|=REQUEST_STATUS;
+      }
+      command_length=discard_command=0;
+    } else if(ch!='\r' && !discard_command) {
+      if(command_length==sizeof(command))discard_command=1;
+      else command[command_length++]=(char)ch;
     }
-    values[i]=(uint16_t)HAL_ADC_GetValue(&hadc1);
-    if(HAL_ADC_Stop(&hadc1)!=HAL_OK)return 0;
   }
-  /* Insertion sort is cheap for 32 elements and rejects ADC glitches. */
-  for(i=1;i<HC_ADC_SAMPLES;i++) {
-    uint16_t x=values[i];
-    j=i;
-    while(j>0 && values[j-1]>x) {values[j]=values[j-1];j--;}
-    values[j]=x;
-  }
-  lo=values[HC_ADC_TRIM];
-  hi=values[HC_ADC_SAMPLES-HC_ADC_TRIM-1u];
-  if((unsigned)(hi-lo)>160u)return 0; /* unstable analogue signal */
-  for(i=HC_ADC_TRIM;i<HC_ADC_SAMPLES-HC_ADC_TRIM;i++)sum+=values[i];
-  *mean_x256=(sum*256u+12u)/24u;
-  return 1;
 }
-static uint8_t read_current(void) {
-  uint32_t vref_x256,pin_x256;
-  uint32_t cal=(uint32_t)HC_VREFINT_CAL;
-  int32_t drop_uv;
-  if(cal<500u || cal>2500u)return 0;
-  if(!adc_filtered(ADC_CHANNEL_VREFINT,&vref_x256)||vref_x256<128000u)return 0;
-  if(!adc_filtered(ADC_CHANNEL_8,&pin_x256))return 0;
-  last_vdda_mv=(int32_t)((3300u*cal*256u+vref_x256/2u)/vref_x256);
-  if(last_vdda_mv<2800L || last_vdda_mv>3600L)return 0;
-  last_dut_mv=(int32_t)(((uint64_t)pin_x256*(uint32_t)last_vdda_mv+
-                        (4095u*256u)/2u)/(4095u*256u));
-  drop_uv=(int32_t)(((int64_t)((4095u*256u)-pin_x256)*
-             last_vdda_mv*1000L)/(4095u*256u));
-  if(drop_uv< -20000L || drop_uv>1500000L)return 0;
-  last_drop_uv=drop_uv;
-  last_current_ua=(drop_uv-(zero_valid?zero_drop_uv:0L))/HC_R_OHMS;
-  if(last_current_ua<0L)last_current_ua=0L;
-  return 1;
+
+/* Main loop owns result state. Briefly mask USB IRQ while taking requests. */
+static uint8_t take_requests(void) {
+  uint32_t mask=__get_PRIMASK();
+  __disable_irq();
+  uint8_t pending=requests;
+  requests=0;
+  __set_PRIMASK(mask);
+  return pending;
 }
-static uint8_t current_ok(void) {
-  if(!read_current()) {
-    current_fault=1;
-    return 0;
-  }
-  if(last_current_ua>peak_current_ua)peak_current_ua=last_current_ua;
-  if(last_current_ua>(int32_t)limit_options_ma[limit_index]*1000L ||
-    last_dut_mv<HC_MIN_DUT_MV) {
-    current_fault=1;
-    return 0;
-  }
-  return 1;
-}
-static void current_label(char *out,size_t size,int32_t ua) {
-  if(ua<0)ua=0;
-  (void)snprintf(out,size,"%ld.%02ldmA",(long)(ua/1000L),
-                 (long)((ua%1000L)/10L));
+
+static void report_status(void) {
+  char line[64];
+  int n=snprintf(line,sizeof(line),"HC1,%s,%s,%u\n",result,part,matches);
+  if(n>0 && (size_t)n<sizeof(line))
+    (void)CDC_Transmit_FS((uint8_t *)line,(uint16_t)n);
 }
 
 typedef struct { GPIO_TypeDef *port; uint16_t mask; } IO;
@@ -270,7 +217,6 @@ static uint8_t test_device(const Device *d) {
           if(d->tristate)drive(enables125[h],d->oe_high);
         }
         HAL_Delay(2);
-        if(!current_ok())goto fail;
         for(h=0;h<d->count;h++) {
           const Gate *other=&d->gates[h];
           if(!output_matches(other->output,
@@ -282,7 +228,6 @@ static uint8_t test_device(const Device *d) {
            */
           drive(enables125[g],!d->oe_high);
           HAL_Delay(2);
-          if(!current_ok())goto fail;
           if(!output_floats(gate->output))goto fail;
           for(h=0;h<d->count;h++)if(h!=g) {
             const Gate *other=&d->gates[h];
@@ -339,114 +284,73 @@ static void lcd_line(uint8_t row,const char *s) {
   }
 }
 
-/* Hold StartKey 2-5 seconds. The socket must be EMPTY.
- * No-load reading is displayed before correcting the measurement to zero.
- */
-void HC_Tester_Calibrate(void) {
-  uint8_t i;
-  int64_t total_uv=0;
-  int32_t new_zero_uv;
-  char msg[17];
+static void socket_power(uint8_t enabled) {
   all_safe();
-  lcd_line(0,"EMPTY ZIF SOCKET");
-  lcd_line(1,"ZERO MEASURE...");
-  HAL_Delay(300);
-  /* Keep the previous zero if this calibration fails. last_drop_uv is raw. */
-  for(i=0;i<8;i++) {
-    int32_t measured_drop_uv;
-    if(!read_current() || last_dut_mv<3000L) {
-      lcd_line(0,"ZERO CAL FAILED");
-      lcd_line(1,"CHECK VCC/ADC");
-      return;
-    }
-    measured_drop_uv=last_drop_uv;
-    if(measured_drop_uv< -10000L || measured_drop_uv>20000L) {
-      lcd_line(0,"NO-LOAD TOO HIGH");
-      lcd_line(1,"REMOVE CHIP");
-      return;
-    }
-    total_uv+=measured_drop_uv;
-  }
-  new_zero_uv=(int32_t)(total_uv/8);
-  no_load_raw_ua=new_zero_uv/HC_R_OHMS;
-  zero_drop_uv=new_zero_uv;
-  zero_valid=1;
-  lcd_line(0,"NO LOAD (RAW)");
-  current_label(msg,sizeof(msg),no_load_raw_ua);
-  lcd_line(1,msg);
-}
-
-void HC_Tester_CycleLimit(void) {
-  char line[32];
-  limit_index=(uint8_t)((limit_index+1u)%
-                          (sizeof(limit_options_ma)/sizeof(limit_options_ma[0])));
-  lcd_line(0,"MAX DUT CURRENT");
-  snprintf(line,sizeof(line),"%umA (SOFTWARE)",
-           (unsigned)limit_options_ma[limit_index]);
-  lcd_line(1,line);
+  HAL_GPIO_WritePin(DUT_EN_GPIO_Port,DUT_EN_Pin,
+                   enabled?GPIO_PIN_RESET:GPIO_PIN_SET);
+  if(enabled)HAL_Delay(10);
 }
 
 void HC_Tester_Init(void) {
-  all_safe(); /* reinforce the CubeMX input/pull-down startup state */
+  socket_power(0);
   lcd_init();
-  lcd_line(0,"74HC LOGIC TESTER");
-  lcd_line(1,"PRESS START");
-  (void)read_current();
+  lcd_line(0,"74HC TESTER");
+  lcd_line(1,"START OR USB");
 }
-void HC_Tester_Run(void) {
-  uint8_t i,matched=0,first=0;
-  int32_t matched_peak_ua=0;
-  current_fault=0;
-  peak_current_ua=0;
-  all_safe();
-  if(!current_ok()) {
-    all_safe();
-    lcd_line(0,"SUPPLY/ADC FAULT");
-    lcd_line(1,"CHECK DUT POWER");
-    return;
-  }
-  char label[32];
-  lcd_line(0,"TESTING...");
-  lcd_line(1,"DO NOT REMOVE");
-  for(i=0;i<ARRAYLEN(devices);i++) {
-    if(current_fault)break;
-    peak_current_ua=0;
+
+static void run_test(void) {
+  const char *first="-";
+  result="TESTING";
+  part="-";
+  matches=0;
+  report_status();
+  lcd_line(0,"TESTING 74HC...");
+  lcd_line(1,"KEEP CHIP IN");
+  socket_power(1);
+  for(unsigned i=0;i<ARRAYLEN(devices);i++) {
     if(test_device(&devices[i])) {
-      if(!matched) { first=i; matched_peak_ua=peak_current_ua; }
-      matched++;
+      if(!matches)first=devices[i].name;
+      matches++;
     }
+    if(take_requests()&REQUEST_STATUS)report_status();
   }
-  all_safe();
-  if(current_fault) {
-    lcd_line(0,"OVERLOAD/FAULT");
-    lcd_line(1,"POWER OFF FIRST");
-  } else if(matched==1) {
-    peak_current_ua=matched_peak_ua;
-    if(!current_ok()) {
-      lcd_line(0,"SUPPLY/ADC FAULT");
-      lcd_line(1,"POWER OFF FIRST");
-      return;
-    }
-    snprintf(label,sizeof(label),"PASS %.11s",devices[first].name);
+  socket_power(0);
+  HAL_Delay(50); /* Allow the 100 nF capacitor to discharge through 100 kOhm. */
+  /* Requests received while testing cannot power the socket back up. */
+  (void)take_requests();
+  if(matches==1) {
+    result="PASS";
+    part=first;
+    lcd_line(0,part);
+    lcd_line(1,"PASS - REMOVE IC");
+  } else if(matches>1) {
+    char label[24];
+    result="AMBIGUOUS";
+    snprintf(label,sizeof(label),"%u MATCHES",matches);
     lcd_line(0,label);
-    /* I = idle, P = peak during the matching candidate; both are mA.
-     * Each value is limited to 0..99.99 mA for bounded LCD formatting. */
-    uint32_t idle_centi = (uint32_t)(last_current_ua > 99990L ? 99990L : last_current_ua)/10u;
-    uint32_t peak_centi = (uint32_t)(peak_current_ua > 99990L ? 99990L : peak_current_ua)/10u;
-    uint8_t idle_whole = (uint8_t)(idle_centi/100u);
-    uint8_t idle_frac = (uint8_t)(idle_centi%100u);
-    uint8_t peak_whole = (uint8_t)(peak_centi/100u);
-    uint8_t peak_frac = (uint8_t)(peak_centi%100u);
-    snprintf(label,sizeof(label),"I%u.%02u P%u.%02u",
-             (unsigned)idle_whole,(unsigned)idle_frac,
-             (unsigned)peak_whole,(unsigned)peak_frac);
-    lcd_line(1,label);
-  } else if(matched>1) {
-    lcd_line(0,"MULTIPLE MATCHES");
-    snprintf(label,sizeof(label),"%u MATCHES",(unsigned)matched);
-    lcd_line(1,label);
+    lcd_line(1,"CHECK PART MARK");
   } else {
-    lcd_line(0,"UNKNOWN / FAULT");
-    lcd_line(1,"CHECK IC & POWER");
+    result="NO_MATCH";
+    lcd_line(0,"NO MATCH");
+    lcd_line(1,"CHECK CHIP/PINS");
   }
+  report_status();
+}
+
+void HC_Tester_Poll(void) {
+  static uint8_t raw, stable;
+  static uint32_t changed;
+  uint8_t pressed=HAL_GPIO_ReadPin(StartKey_GPIO_Port,StartKey_Pin)==GPIO_PIN_RESET;
+  uint8_t pending=take_requests();
+  uint8_t start=(pending&REQUEST_RUN)!=0;
+  if(pressed!=raw) {
+    raw=pressed;
+    changed=HAL_GetTick();
+  }
+  if(raw!=stable && HAL_GetTick()-changed>=30u) {
+    stable=raw;
+    if(stable)start=1;
+  }
+  if(start)run_test();
+  else if(pending&REQUEST_STATUS)report_status();
 }

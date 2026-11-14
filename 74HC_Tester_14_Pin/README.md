@@ -1,61 +1,31 @@
-# 74HC 14-pin logic tester
+# 74HC logic tester
 
-STM32F401RCT6 firmware for the fixed-power 14-pin socket in
-`Schematic_Of_The_Device.asc`. Pin 14 is 3.3 V through 47 ohms; pin 7 is ground.
-Each signal requires its own 1 kohm series resistor. PB0 senses socket VCC.
-The resistor's upstream supply must equal MCU VDDA for the current estimate
-in this firmware to be meaningful.
+The STM32F401RCT6 checks static logic on compatible 3.3 V, 14-pin parts with
+VCC on pin 14 and ground on pin 7. Insert the chip with the notch aligned and
+press Start once. The LCD shows when the test is running, the matching part
+or reason to recheck, and when the socket supply is off. Parts with identical
+logic and pinouts share a result, such as 74HC00/132 and 74HC04/14.
 
-## Operation
+Connect the socket per the schematic: PB0 goes to ZIF1 and PB1 to ZIF13.
+PB13 drives the 2N3906 base through R7. The 10 kΩ pull-up keeps the active-low
+switch off at reset. Keep all 1 kΩ signal resistors and the 47 Ω supply resistor.
+The firmware switches power on during a test and off before displaying its
+result. The 47 Ω resistor limits current. The fixture has no voltage or
+current feedback, so it cannot detect or report an overload directly.
 
-- Short StartKey press: identify/test a chip.
-- Hold 2–5 seconds, then release: zero the current estimate with an **empty** socket.
-- Hold at least 5 seconds, then release: cycle the software threshold (3/5/8/10 mA).
-- `I` and `P` on a PASS screen are idle and peak sampled current in mA. Peak
-  includes the matching device test and final idle check, not rejected candidates.
-  These are estimates, not precision current measurements or transient capture.
-- A failed zero calibration preserves the last successful zero. Settings and zero
-  are RAM-only and reset on restart.
+## PC app (Windows)
 
-The firmware sweeps every gate's truth table while holding the other gates at
-both output polarities, checking all outputs with both weak pull directions.
-For 125/126 buffers it also disables one gate at a time and checks that the
-other gates remain enabled. This detects some cross-gate and enable coupling;
-it is not exhaustive coverage of every possible multi-pin fault.
+1. Build and flash the CubeIDE project. Plug the STM32 USB data port into the PC.
+2. From the project directory run `py -m pip install -r pc/requirements.txt`.
+3. Run `py pc/tester.py`. Select the tester's COM port, click **Connect**, and
+   click **Run Test** or use the board's button. The board can also work by itself.
 
-The table supports 20 logic/pinout entries. DC truth tables cannot distinguish
-00 from 132, 04 from 14, or otherwise prove the exact logic family or speed grade.
-Only use known-compatible 3.3 V CMOS parts with this power pinout. This is not a
-16-pin, sequential-logic, or universal 74-series tester.
-
-## Hardware limits
-
-There is **no software-controlled DUT power switch** in this schematic. A fault
-stops stimulus and returns signal pins to input/pull-down, but VCC stays on.
-Power off before inserting/removing a chip, including after a fault. The 47 ohm
-resistor and sampled software threshold do not provide an active current cutoff.
-Wrong candidates can also produce contention, so a threshold trip is not proof
-that the inserted IC is defective.
-
-Open-drain stimulus uses weak MCU pull-ups. Rising-edge speed depends on fixture
-capacitance; long wiring can violate ordinary HC input transition requirements.
-A DC PASS does not establish timing compliance or Schmitt-trigger behavior.
+The USB CDC protocol accepts newline-terminated `STATUS` and `RUN`.
+Responses have the form `HC1,state,part,count` followed by a newline.
+Only one test runs at a time. Query STATUS for the latest result if a
+notification was missed. The USB clock configuration assumes a 25 MHz HSE.
 
 ## Regression checks
 
-Run `python3 tests/run_tests.py` with host GCC available. It compiles the driver
-with `-O2 -Wall -Wextra -Werror -Wformat-truncation=2` against a mock HAL and checks
-20 ideal device models, stuck/open outputs, selected cross-gate and OE faults,
-empty socket, supply/ADC faults, calibration retention and LCD/current reporting.
-The models reuse the pinout table, so they do not independently validate physical
-pinouts. Tests are outside CubeIDE's configured firmware source directories.
-
-CubeMX configuration and generated setup are unchanged. Build/flash with
-STM32CubeIDE and confirm behavior on the actual fixture; host tests do not replace
-an ARM firmware build or hardware validation.
-
-Reference checks: [STM32F401xB/xC datasheet](https://www.st.com/resource/en/datasheet/stm32f401vc.pdf)
-(VREFINT calibration and ADC timing),
-[74HC125](https://assets.nexperia.com/documents/data-sheet/74HC_HCT125.pdf) and
-[74HC126](https://assets.nexperia.com/documents/data-sheet/74HC_HCT126.pdf)
-(enable polarity and high-impedance operation).
+Run `python3 tests/run_tests.py` with host GCC. The fixture mock uses the
+firmware's device table and does not independently verify physical pinouts.

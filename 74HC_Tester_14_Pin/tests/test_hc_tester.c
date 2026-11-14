@@ -3,26 +3,20 @@
 
 GPIO_TypeDef mock_port;
 I2C_HandleTypeDef hi2c1;
-ADC_HandleTypeDef hadc1;
-static uint32_t mode[15], pull[15], level[15], channel;
+static uint32_t mode[15], pull[15], level[15];
 static const Device *dut;
-static int fault, adc_error, simulate_contention;
-static uint32_t supply_counts=4090;
+static int fault;
+static char response[64];
 static char screen[2][17];
 static unsigned lcd_row, lcd_col;
 static uint8_t lcd_hi, lcd_half, lcd_prev;
 
-int HAL_ADC_ConfigChannel(ADC_HandleTypeDef *a, ADC_ChannelConfTypeDef *c) {
-  (void)a; channel=c->Channel; return 0;
-}
-int HAL_ADC_Start(ADC_HandleTypeDef *a) { (void)a; return 0; }
-int HAL_ADC_Stop(ADC_HandleTypeDef *a) { (void)a; return 0; }
-int HAL_ADC_PollForConversion(ADC_HandleTypeDef *a,int t) { (void)a;(void)t;return adc_error; }
-uint32_t HAL_ADC_GetValue(ADC_HandleTypeDef *a) {
-  (void)a;
-  if(channel==ADC_CHANNEL_VREFINT)return 1500;
-  if(simulate_contention && mode[2]==GPIO_MODE_OUTPUT_OD)return 4000;
-  return supply_counts;
+uint32_t HAL_GetTick(void) { return 0; }
+uint8_t CDC_Transmit_FS(uint8_t *data,uint16_t len) {
+  assert(len<sizeof(response));
+  memcpy(response,data,len);
+  response[len]='\0';
+  return 0;
 }
 void HAL_GPIO_Init(GPIO_TypeDef *p, GPIO_InitTypeDef *s) {
   (void)p; mode[s->Pin]=s->Mode;pull[s->Pin]=s->Pull;
@@ -78,8 +72,7 @@ int HAL_I2C_Master_Transmit(I2C_HandleTypeDef *h,uint16_t a,uint8_t *v,int n,int
   lcd_prev=*v;return 0;
 }
 static void reset(void) {
-  fault=adc_error=simulate_contention=0;current_fault=zero_valid=0;limit_index=3;
-  supply_counts=4090;peak_current_ua=0;all_safe();
+  fault=0;all_safe();HC_Tester_USBReset();
 }
 static void released(void) {
   for(unsigned p=1;p<14;p++)if(p!=7)assert(mode[p]==GPIO_MODE_INPUT);
@@ -93,17 +86,24 @@ int main(void) {
   reset();dut=&devices[2];fault=3;assert(!test_device(dut));released();
   reset();dut=&devices[19];fault=4;assert(!test_device(dut));released();
   reset();dut=0;assert(!test_device(&devices[0]));released();
-  reset();dut=&devices[0];supply_counts=3300;
-  assert(!test_device(dut));assert(current_fault);released();
-  reset();adc_error=1;assert(!test_device(dut));assert(current_fault);released();
-  reset();zero_valid=1;zero_drop_uv=1000;adc_error=1;
-  HC_Tester_Calibrate();assert(zero_valid && zero_drop_uv==1000);
-  reset();HC_Tester_Calibrate();assert(zero_valid && zero_drop_uv>0);
-  assert(read_current() && last_current_ua==0);
-  reset();dut=&devices[2];simulate_contention=1;HC_Tester_Run();
-  assert(strncmp(screen[0],"PASS 74HC04/14",13)==0);released();
-  assert(strncmp(screen[1],"I0.08 P0.08",11)==0); /* exclude failed candidates */
-  reset();dut=0;HC_Tester_Run();assert(strncmp(screen[0],"UNKNOWN / FAULT",15)==0);
-  reset();adc_error=1;HC_Tester_Run();assert(strncmp(screen[0],"SUPPLY/ADC FAULT",16)==0);
-  puts("PASS: 20 device models; stuck/open outputs; cross-gate and OE coupling; empty socket; supply/ADC faults; calibration; peak-current isolation; LCD result paths.");
+  reset();dut=&devices[2];level[StartKey_Pin]=1;
+  HC_Tester_USBReceive((const uint8_t *)"RU",2);
+  HC_Tester_Poll();
+  assert(response[0]=='\0');
+  HC_Tester_USBReceive((const uint8_t *)"N\r\nSTATUS\n",10);
+  HC_Tester_Poll();
+  assert(strcmp(response,"HC1,PASS,74HC04/14,1\n")==0);
+  assert(strncmp(screen[0],"74HC04/14",9)==0);
+  assert(level[DUT_EN_Pin]);released();
+
+  reset();dut=0;
+  HC_Tester_USBReceive((const uint8_t *)"123456789RUN\n",13);
+  HC_Tester_Poll();
+  assert(strcmp(response,"HC1,PASS,74HC04/14,1\n")==0);
+  HC_Tester_USBReceive((const uint8_t *)"RUN\n",4);
+  HC_Tester_Poll();
+  assert(strcmp(response,"HC1,NO_MATCH,-,0\n")==0);
+  assert(strncmp(screen[0],"NO MATCH",8)==0);
+  assert(level[DUT_EN_Pin]);released();
+  puts("PASS: 20 device models, gate and enable faults, USB framing, LCD results, power release.");
 }
