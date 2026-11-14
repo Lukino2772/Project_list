@@ -147,11 +147,12 @@ static uint8_t output_floats(uint8_t p) {
   return 1;
 }
 static uint8_t test_device(const Device *d) {
-  uint8_t g,i,pat,n,enable;
+  uint8_t g,i,enable;
+  uint16_t pat,n;
   for(g=0;g<d->count;g++) {
     const Gate *gate=&d->gates[g];
     enable=d->tristate?enables125[g]:0;
-    n=(uint8_t)(1u<<gate->count);
+    n=(uint16_t)(1u<<gate->count);
     all_safe();
     if(d->tristate) {
       drive(enable,d->oe_high?0:1); /* explicitly disable before testing */
@@ -160,7 +161,7 @@ static uint8_t test_device(const Device *d) {
       for(i=0;i<gate->count;i++) drive(gate->inputs[i],(pat>>i)&1);
       if(d->tristate) drive(enable,d->oe_high?1:0);
       HAL_Delay(2);
-      if(!output_matches(gate->output,expected(gate->op,pat,gate->count))) {
+      if(!output_matches(gate->output,expected(gate->op,(uint8_t)pat,gate->count))) {
         all_safe(); return 0;
       }
       if(d->tristate) {
