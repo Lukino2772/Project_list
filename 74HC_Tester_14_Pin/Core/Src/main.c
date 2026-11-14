@@ -272,27 +272,18 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, ZIF10_Pin|ZIF9_Pin|ZIF8_Pin|ZIF6_Pin
-                          |ZIF5_Pin|ZIF4_Pin|ZIF3_Pin|ZIF2_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, ZIF12_Pin|ZIF11_Pin, GPIO_PIN_RESET);
-
   /*Configure GPIO pins : ZIF10_Pin ZIF9_Pin ZIF8_Pin ZIF6_Pin
                            ZIF5_Pin ZIF4_Pin ZIF3_Pin ZIF2_Pin */
   GPIO_InitStruct.Pin = ZIF10_Pin|ZIF9_Pin|ZIF8_Pin|ZIF6_Pin
                           |ZIF5_Pin|ZIF4_Pin|ZIF3_Pin|ZIF2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ZIF12_Pin ZIF11_Pin */
-  GPIO_InitStruct.Pin = ZIF12_Pin|ZIF11_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  /*Configure GPIO pins : ZIF12_Pin ZIF11_Pin ZIF1_Pin ZIF13_Pin */
+  GPIO_InitStruct.Pin = ZIF12_Pin|ZIF11_Pin|ZIF1_Pin|ZIF13_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : StartKey_Pin */
@@ -300,12 +291,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(StartKey_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : ZIF1_Pin ZIF13_Pin */
-  GPIO_InitStruct.Pin = ZIF1_Pin|ZIF13_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
