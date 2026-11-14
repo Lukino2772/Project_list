@@ -58,6 +58,7 @@ static void MX_ADC1_Init(void);
 void HC_Tester_Init(void);
 void HC_Tester_Run(void);
 void HC_Tester_Calibrate(void);
+void HC_Tester_CycleLimit(void);
 
 /* USER CODE END PFP */
 
@@ -123,7 +124,9 @@ int main(void)
           HAL_Delay(10);
         }
         HAL_Delay(35);
-        if (long_press) HC_Tester_Calibrate(); /* EMPTY SOCKET ONLY */
+        uint32_t hold_ms = HAL_GetTick() - pressed_at;
+        if (hold_ms >= 5000u) HC_Tester_CycleLimit();
+        else if (long_press) HC_Tester_Calibrate(); /* EMPTY SOCKET ONLY */
         else HC_Tester_Run();
       }
     }
