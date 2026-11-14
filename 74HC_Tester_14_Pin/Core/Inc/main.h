@@ -81,10 +81,8 @@ void Error_Handler(void);
 #define ZIF12_GPIO_Port GPIOB
 #define ZIF11_Pin GPIO_PIN_10
 #define ZIF11_GPIO_Port GPIOB
-#define Key1_Pin GPIO_PIN_12
-#define Key1_GPIO_Port GPIOB
-#define Key2_Pin GPIO_PIN_13
-#define Key2_GPIO_Port GPIOB
+#define StartKey_Pin GPIO_PIN_12
+#define StartKey_GPIO_Port GPIOB
 #define LCD_1602_SCL_Pin GPIO_PIN_6
 #define LCD_1602_SCL_GPIO_Port GPIOB
 #define LCD_1602_SDA_Pin GPIO_PIN_7
