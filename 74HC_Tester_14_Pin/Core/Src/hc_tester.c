@@ -32,7 +32,7 @@ static int32_t zero_drop_uv;      /* signed empty-socket offset */
 static int32_t no_load_raw_ua;    /* uncorrected empty-socket current */
 static int32_t last_current_ua;   /* after no-load zero correction */
 static int32_t last_drop_uv;      /* signed uncorrected voltage drop */
-static int32_t peak_current_ua;   /* highest sampled during last test */
+static int32_t peak_current_ua;   /* highest sampled for the current candidate */
 static int32_t last_dut_mv;
 static int32_t last_vdda_mv;
 static uint8_t zero_valid;
@@ -244,34 +244,60 @@ static uint8_t output_floats(uint8_t p) {
   if(sense(p)) return 0;
   return 1;
 }
+/* Hold other gates at each output polarity while sweeping one truth table.
+ * Checking every output catches coupling that isolated gate tests miss.
+ */
+static uint8_t background_pattern(const Gate *gate, uint8_t value) {
+  uint16_t pat;
+  for(pat=0;pat<(1u<<gate->count);pat++)
+    if(expected(gate->op,(uint8_t)pat,gate->count)==value)return (uint8_t)pat;
+  return 0;
+}
 static uint8_t test_device(const Device *d) {
-  uint8_t g,i,enable;
+  uint8_t g,h,i,bg;
   uint16_t pat,n;
+  uint8_t patterns[6]; /* largest supported package contains six gates */
+  all_safe();
   for(g=0;g<d->count;g++) {
     const Gate *gate=&d->gates[g];
-    enable=d->tristate?enables125[g]:0;
     n=(uint16_t)(1u<<gate->count);
-    all_safe();
-    if(d->tristate) {
-      drive(enable,d->oe_high?0:1); /* explicitly disable before testing */
-    }
-    for(pat=0;pat<n;pat++) {
-      for(i=0;i<gate->count;i++) drive(gate->inputs[i],(pat>>i)&1);
-      if(d->tristate) drive(enable,d->oe_high?1:0);
-      HAL_Delay(2);
-      if(!current_ok()) { all_safe(); return 0; }
-      if(!output_matches(gate->output,expected(gate->op,(uint8_t)pat,gate->count))) {
-        all_safe(); return 0;
-      }
-      if(d->tristate) {
-        drive(enable,d->oe_high?0:1); /* disable */
+    for(bg=0;bg<(d->count>1?2u:1u);bg++) {
+      for(pat=0;pat<n;pat++) {
+        for(h=0;h<d->count;h++) {
+          const Gate *other=&d->gates[h];
+          patterns[h]=(h==g)?(uint8_t)pat:background_pattern(other,bg);
+          for(i=0;i<other->count;i++)drive(other->inputs[i],(patterns[h]>>i)&1u);
+          if(d->tristate)drive(enables125[h],d->oe_high);
+        }
         HAL_Delay(2);
-        if(!output_floats(gate->output)) { all_safe(); return 0; }
+        if(!current_ok())goto fail;
+        for(h=0;h<d->count;h++) {
+          const Gate *other=&d->gates[h];
+          if(!output_matches(other->output,
+               expected(other->op,patterns[h],other->count)))goto fail;
+        }
+        if(d->tristate) {
+          /* Disable only this gate; all the others must keep driving.
+           * Repeat for both data levels to expose stuck/coupled enables.
+           */
+          drive(enables125[g],!d->oe_high);
+          HAL_Delay(2);
+          if(!current_ok())goto fail;
+          if(!output_floats(gate->output))goto fail;
+          for(h=0;h<d->count;h++)if(h!=g) {
+            const Gate *other=&d->gates[h];
+            if(!output_matches(other->output,
+                 expected(other->op,patterns[h],other->count)))goto fail;
+          }
+        }
       }
     }
   }
   all_safe();
   return 1;
+fail:
+  all_safe();
+  return 0;
 }
 
 /* Conventional PCF8574 I2C backpack: P0=RS P1=RW P2=EN P3=BL, P4..P7=data */
@@ -325,7 +351,7 @@ void HC_Tester_Calibrate(void) {
   lcd_line(0,"EMPTY ZIF SOCKET");
   lcd_line(1,"ZERO MEASURE...");
   HAL_Delay(300);
-  zero_valid=0;
+  /* Keep the previous zero if this calibration fails. last_drop_uv is raw. */
   for(i=0;i<8;i++) {
     int32_t measured_drop_uv;
     if(!read_current() || last_dut_mv<3000L) {
@@ -351,7 +377,7 @@ void HC_Tester_Calibrate(void) {
 }
 
 void HC_Tester_CycleLimit(void) {
-  char line[17];
+  char line[32];
   limit_index=(uint8_t)((limit_index+1u)%
                           (sizeof(limit_options_ma)/sizeof(limit_options_ma[0])));
   lcd_line(0,"MAX DUT CURRENT");
@@ -361,7 +387,7 @@ void HC_Tester_CycleLimit(void) {
 }
 
 void HC_Tester_Init(void) {
-  all_safe(); /* immediately release CubeMX-configured push-pull pins */
+  all_safe(); /* reinforce the CubeMX input/pull-down startup state */
   lcd_init();
   lcd_line(0,"74HC LOGIC TESTER");
   lcd_line(1,"PRESS START");
@@ -369,6 +395,7 @@ void HC_Tester_Init(void) {
 }
 void HC_Tester_Run(void) {
   uint8_t i,matched=0,first=0;
+  int32_t matched_peak_ua=0;
   current_fault=0;
   peak_current_ua=0;
   all_safe();
@@ -378,28 +405,32 @@ void HC_Tester_Run(void) {
     lcd_line(1,"CHECK DUT POWER");
     return;
   }
-  char label[17];
+  char label[32];
   lcd_line(0,"TESTING...");
   lcd_line(1,"DO NOT REMOVE");
   for(i=0;i<ARRAYLEN(devices);i++) {
     if(current_fault)break;
+    peak_current_ua=0;
     if(test_device(&devices[i])) {
-      if(!matched)first=i;
+      if(!matched) { first=i; matched_peak_ua=peak_current_ua; }
       matched++;
     }
   }
   all_safe();
   if(current_fault) {
     lcd_line(0,"OVERLOAD/FAULT");
-    lcd_line(1,"REMOVE DUT");
+    lcd_line(1,"POWER OFF FIRST");
   } else if(matched==1) {
-    snprintf(label,sizeof(label),"PASS %.11s",devices[first].name);
-    lcd_line(0,label);
-    if(!read_current()) {
-      lcd_line(1,"ADC READ ERROR");
+    peak_current_ua=matched_peak_ua;
+    if(!current_ok()) {
+      lcd_line(0,"SUPPLY/ADC FAULT");
+      lcd_line(1,"POWER OFF FIRST");
       return;
     }
-    /* Each value is limited to 0..99.99 mA for bounded LCD formatting. */
+    snprintf(label,sizeof(label),"PASS %.11s",devices[first].name);
+    lcd_line(0,label);
+    /* I = idle, P = peak during the matching candidate; both are mA.
+     * Each value is limited to 0..99.99 mA for bounded LCD formatting. */
     uint32_t idle_centi = (uint32_t)(last_current_ua > 99990L ? 99990L : last_current_ua)/10u;
     uint32_t peak_centi = (uint32_t)(peak_current_ua > 99990L ? 99990L : peak_current_ua)/10u;
     uint8_t idle_whole = (uint8_t)(idle_centi/100u);
