@@ -31,6 +31,8 @@ static uint8_t limit_index=3u;
 static int32_t zero_drop_uv;      /* signed empty-socket offset */
 static int32_t no_load_raw_ua;    /* uncorrected empty-socket current */
 static int32_t last_current_ua;   /* after no-load zero correction */
+static int32_t last_drop_uv;      /* signed uncorrected voltage drop */
+static int32_t peak_current_ua;   /* highest sampled during last test */
 static int32_t last_dut_mv;
 static int32_t last_vdda_mv;
 static uint8_t zero_valid;
@@ -86,13 +88,18 @@ static uint8_t read_current(void) {
   drop_uv=(int32_t)(((int64_t)((4095u*256u)-pin_x256)*
              last_vdda_mv*1000L)/(4095u*256u));
   if(drop_uv< -20000L || drop_uv>1500000L)return 0;
+  last_drop_uv=drop_uv;
   last_current_ua=(drop_uv-(zero_valid?zero_drop_uv:0L))/HC_R_OHMS;
   if(last_current_ua<0L)last_current_ua=0L;
   return 1;
 }
 static uint8_t current_ok(void) {
-  if(!read_current() ||
-    last_current_ua>(int32_t)limit_options_ma[limit_index]*1000L ||
+  if(!read_current()) {
+    current_fault=1;
+    return 0;
+  }
+  if(last_current_ua>peak_current_ua)peak_current_ua=last_current_ua;
+  if(last_current_ua>(int32_t)limit_options_ma[limit_index]*1000L ||
     last_dut_mv<HC_MIN_DUT_MV) {
     current_fault=1;
     return 0;
@@ -326,7 +333,7 @@ void HC_Tester_Calibrate(void) {
       lcd_line(1,"CHECK VCC/ADC");
       return;
     }
-    measured_drop_uv=last_current_ua*HC_R_OHMS;
+    measured_drop_uv=last_drop_uv;
     if(measured_drop_uv< -10000L || measured_drop_uv>20000L) {
       lcd_line(0,"NO-LOAD TOO HIGH");
       lcd_line(1,"REMOVE CHIP");
@@ -363,6 +370,7 @@ void HC_Tester_Init(void) {
 void HC_Tester_Run(void) {
   uint8_t i,matched=0,first=0;
   current_fault=0;
+  peak_current_ua=0;
   all_safe();
   if(!current_ok()) {
     all_safe();
@@ -391,7 +399,7 @@ void HC_Tester_Run(void) {
       lcd_line(1,"CHECK ADC WIRING");
       return;
     }
-    snprintf(label,sizeof(label),"%.7s %ld.%02ldmA",devices[first].name,
+    snprintf(label,sizeof(label),"%.7s I%ld.%02ld",devices[first].name,
              (long)(last_current_ua/1000L),(long)((last_current_ua%1000L)/10L));
     lcd_line(1,label);
   } else if(matched>1) {
