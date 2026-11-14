@@ -393,14 +393,15 @@ void HC_Tester_Run(void) {
     lcd_line(0,"OVERLOAD/FAULT");
     lcd_line(1,"REMOVE DUT");
   } else if(matched==1) {
-    lcd_line(0,"MATCH / PASS");
+    snprintf(label,sizeof(label),"PASS %.11s",devices[first].name);
+    lcd_line(0,label);
     if(!read_current()) {
-      lcd_line(0,"ADC READ ERROR");
-      lcd_line(1,"CHECK ADC WIRING");
+      lcd_line(1,"ADC READ ERROR");
       return;
     }
-    snprintf(label,sizeof(label),"%.7s I%ld.%02ld",devices[first].name,
-             (long)(last_current_ua/1000L),(long)((last_current_ua%1000L)/10L));
+    snprintf(label,sizeof(label),"I%ld.%02ld P%ld.%02ldmA",
+             (long)(last_current_ua/1000L),(long)((last_current_ua%1000L)/10L),
+             (long)(peak_current_ua/1000L),(long)((peak_current_ua%1000L)/10L));
     lcd_line(1,label);
   } else if(matched>1) {
     lcd_line(0,"MULTIPLE MATCHES");
