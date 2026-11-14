@@ -14,6 +14,65 @@
 
 extern I2C_HandleTypeDef hi2c1;
 
+/* PB0 = ADC1_IN8 = powered ZIF14 side of 47-ohm resistor.
+ * The resistor's upstream rail MUST match MCU VDDA for this calculation.
+ * STM32F401xC factory VREFINT calibration word at 0x1FFF7A2A (3.3V).
+ * No-load calibration requires EMPTY socket, held StartKey for >=2 seconds.
+ * Software current checks are diagnostic; they cannot replace hardware
+ * current limiting or protect against an instantaneous short.
+ */
+extern ADC_HandleTypeDef hadc1;
+#define HC_R_MOHM 47000L       /* 47 ohms expressed in milliohms */
+#define HC_MAX_CURRENT_UA 10000L  /* nominal trip threshold 10mA */
+#define HC_MIN_DUT_MV 2700L
+#define VREFINT_CAL_F401 (*(const uint16_t *)0x1FFF7A2AU)
+static int32_t zero_drop_mv;
+static int32_t last_current_ua;
+static int32_t last_dut_mv;
+static int32_t last_vdda_mv;
+static uint8_t current_fault;
+
+static uint8_t adc_average(uint32_t channel, uint32_t *value) {
+  ADC_ChannelConfTypeDef cfg = {0};
+  uint32_t sum=0;
+  uint8_t i;
+  cfg.Channel=channel;
+  cfg.Rank=1;
+  cfg.SamplingTime=ADC_SAMPLETIME_480CYCLES;
+  if(HAL_ADC_ConfigChannel(&hadc1,&cfg)!=HAL_OK)return 0;
+  for(i=0;i<16;i++) {
+    if(HAL_ADC_Start(&hadc1)!=HAL_OK)return 0;
+    if(HAL_ADC_PollForConversion(&hadc1,10)!=HAL_OK) {
+      (void)HAL_ADC_Stop(&hadc1); return 0;
+    }
+    sum+=HAL_ADC_GetValue(&hadc1);
+    if(HAL_ADC_Stop(&hadc1)!=HAL_OK)return 0;
+  }
+  *value=(sum+8u)/16u;
+  return 1;
+}
+static uint8_t read_current(void) {
+  uint32_t ref_raw,pin_raw;
+  const uint32_t cal=VREFINT_CAL_F401;
+  int32_t drop;
+  if(cal<500u || cal>2500u)return 0;
+  if(!adc_average(ADC_CHANNEL_VREFINT,&ref_raw) || ref_raw<500u)return 0;
+  if(!adc_average(ADC_CHANNEL_8,&pin_raw))return 0;
+  last_vdda_mv=(int32_t)((3300u*cal+ref_raw/2u)/ref_raw);
+  if(last_vdda_mv<2800 || last_vdda_mv>3600)return 0;
+  last_dut_mv=(int32_t)((pin_raw*(uint32_t)last_vdda_mv+2047u)/4095u);
+  drop=last_vdda_mv-last_dut_mv-zero_drop_mv;
+  last_current_ua=(drop>0)?(drop*1000000L/47000L):0L;
+  return 1;
+}
+static uint8_t current_ok(void) {
+  if(!read_current() || last_current_ua>HC_MAX_CURRENT_UA ||
+      last_dut_mv<HC_MIN_DUT_MV) {
+    current_fault=1; return 0;
+  }
+  return 1;
+}
+
 typedef struct { GPIO_TypeDef *port; uint16_t mask; } IO;
 static const IO zif[15] = {
   {0,0}, {ZIF1_GPIO_Port,ZIF1_Pin}, {ZIF2_GPIO_Port,ZIF2_Pin},
@@ -161,6 +220,7 @@ static uint8_t test_device(const Device *d) {
       for(i=0;i<gate->count;i++) drive(gate->inputs[i],(pat>>i)&1);
       if(d->tristate) drive(enable,d->oe_high?1:0);
       HAL_Delay(2);
+      if(!current_ok()) { all_safe(); return 0; }
       if(!output_matches(gate->output,expected(gate->op,(uint8_t)pat,gate->count))) {
         all_safe(); return 0;
       }
@@ -214,27 +274,64 @@ static void lcd_line(uint8_t row,const char *s) {
   }
 }
 
+void HC_Tester_Calibrate(void) {
+  uint8_t i;
+  int32_t sum=0;
+  all_safe();
+  lcd_line(0,"REMOVE IC FIRST");
+  lcd_line(1,"CALIBRATING...");
+  HAL_Delay(600);
+  zero_drop_mv=0;
+  for(i=0;i<16;i++) {
+    if(!read_current() || last_dut_mv<3000) {
+      zero_drop_mv=0;
+      lcd_line(0,"CALIBRATION FAIL");
+      lcd_line(1,"CHECK 3V3/ADC");
+      return;
+    }
+    sum+=last_vdda_mv-last_dut_mv;
+  }
+  zero_drop_mv=(sum>=0)?(sum+8)/16:(sum-8)/16;
+  lcd_line(0,"ZERO CAL DONE");
+  lcd_line(1,"EMPTY SOCKET OK");
+}
+
 void HC_Tester_Init(void) {
   all_safe(); /* immediately release CubeMX-configured push-pull pins */
   lcd_init();
   lcd_line(0,"74HC LOGIC TESTER");
   lcd_line(1,"PRESS START");
+  (void)read_current();
 }
 void HC_Tester_Run(void) {
   uint8_t i,matched=0,first=0;
+  current_fault=0;
+  all_safe();
+  if(!current_ok()) {
+    all_safe();
+    lcd_line(0,"SUPPLY/ADC FAULT");
+    lcd_line(1,"CHECK DUT POWER");
+    return;
+  }
   char label[17];
   lcd_line(0,"TESTING...");
   lcd_line(1,"DO NOT REMOVE");
   for(i=0;i<ARRAYLEN(devices);i++) {
+    if(current_fault)break;
     if(test_device(&devices[i])) {
       if(!matched)first=i;
       matched++;
     }
   }
   all_safe();
-  if(matched==1) {
+  if(current_fault) {
+    lcd_line(0,"OVERLOAD/FAULT");
+    lcd_line(1,"REMOVE DUT");
+  } else if(matched==1) {
     lcd_line(0,"MATCH / PASS");
-    snprintf(label,sizeof(label),"%s",devices[first].name);
+    if(!read_current()) last_current_ua=0;
+    snprintf(label,sizeof(label),"%.7s %ld.%02ldmA",devices[first].name,
+             (long)(last_current_ua/1000L),(long)((last_current_ua%1000L)/10L));
     lcd_line(1,label);
   } else if(matched>1) {
     lcd_line(0,"MULTIPLE MATCHES");
