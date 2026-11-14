@@ -57,6 +57,7 @@ static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 void HC_Tester_Init(void);
 void HC_Tester_Run(void);
+void HC_Tester_Calibrate(void);
 
 /* USER CODE END PFP */
 
@@ -114,10 +115,16 @@ int main(void)
       HAL_Delay(35);
       if (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
       {
-        HC_Tester_Run();
+        uint32_t pressed_at = HAL_GetTick();
+        uint8_t long_press = 0;
         while (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
+        {
+          if ((HAL_GetTick() - pressed_at) >= 2000u) long_press = 1;
           HAL_Delay(10);
+        }
         HAL_Delay(35);
+        if (long_press) HC_Tester_Calibrate(); /* EMPTY SOCKET ONLY */
+        else HC_Tester_Run();
       }
     }
   }
