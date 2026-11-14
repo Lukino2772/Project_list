@@ -54,6 +54,21 @@ static const Gate gates32[] = {G2(1,2,3,OP_OR),G2(4,5,6,OP_OR),
                               G2(9,10,8,OP_OR),G2(12,13,11,OP_OR)};
 static const Gate gates86[] = {G2(1,2,3,OP_XOR),G2(4,5,6,OP_XOR),
                               G2(9,10,8,OP_XOR),G2(12,13,11,OP_XOR)};
+
+/* Alternate 4000-series quad-gate layout, also used by 74HC4001/4011 etc. */
+static const Gate gates4001[] = {G2(1,2,3,OP_NOR),G2(5,6,4,OP_NOR),
+                                G2(8,9,10,OP_NOR),G2(12,13,11,OP_NOR)};
+static const Gate gates4011[] = {G2(1,2,3,OP_NAND),G2(5,6,4,OP_NAND),
+                                G2(8,9,10,OP_NAND),G2(12,13,11,OP_NAND)};
+static const Gate gates4070[] = {G2(1,2,3,OP_XOR),G2(5,6,4,OP_XOR),
+                                G2(8,9,10,OP_XOR),G2(12,13,11,OP_XOR)};
+static const Gate gates4071[] = {G2(1,2,3,OP_OR),G2(5,6,4,OP_OR),
+                                G2(8,9,10,OP_OR),G2(12,13,11,OP_OR)};
+static const Gate gates4077[] = {G2(1,2,3,OP_XNOR),G2(5,6,4,OP_XNOR),
+                                G2(8,9,10,OP_XNOR),G2(12,13,11,OP_XNOR)};
+static const Gate gates4081[] = {G2(1,2,3,OP_AND),G2(5,6,4,OP_AND),
+                                G2(8,9,10,OP_AND),G2(12,13,11,OP_AND)};
+
 static const Gate gates125[] = {G1(2,3,OP_BUF),G1(5,6,OP_BUF),
                                G1(9,8,OP_BUF),G1(12,11,OP_BUF)};
 static const uint8_t enables125[] = {1,4,10,13};
@@ -71,6 +86,12 @@ static const Device devices[] = {
   {"74HC30",gates30,ARRAYLEN(gates30),0,0},
   {"74HC32",gates32,ARRAYLEN(gates32),0,0},
   {"74HC86",gates86,ARRAYLEN(gates86),0,0},
+  {"74HC4001",gates4001,ARRAYLEN(gates4001),0,0},
+  {"74HC4011",gates4011,ARRAYLEN(gates4011),0,0},
+  {"74HC4070",gates4070,ARRAYLEN(gates4070),0,0},
+  {"74HC4071",gates4071,ARRAYLEN(gates4071),0,0},
+  {"74HC4077",gates4077,ARRAYLEN(gates4077),0,0},
+  {"74HC4081",gates4081,ARRAYLEN(gates4081),0,0},
   {"74HC125",gates125,ARRAYLEN(gates125),1,0},
   {"74HC126",gates125,ARRAYLEN(gates125),1,1}
 };
