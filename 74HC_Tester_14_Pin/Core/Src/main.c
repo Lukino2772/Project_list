@@ -52,6 +52,8 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
+void HC_Tester_Init(void);
+void HC_Tester_Run(void);
 
 /* USER CODE END PFP */
 
@@ -92,6 +94,7 @@ int main(void)
   MX_I2C1_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
+  HC_Tester_Init();
 
   /* USER CODE END 2 */
 
@@ -102,6 +105,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    if (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
+    {
+      HAL_Delay(35);
+      if (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
+      {
+        HC_Tester_Run();
+        while (HAL_GPIO_ReadPin(StartKey_GPIO_Port, StartKey_Pin) == GPIO_PIN_RESET)
+          HAL_Delay(10);
+        HAL_Delay(35);
+      }
+    }
   }
   /* USER CODE END 3 */
 }
