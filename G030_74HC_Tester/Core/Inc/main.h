@@ -61,8 +61,8 @@ void Error_Handler(void);
 #define LCD_1602_SCL_GPIO_Port GPIOB
 #define LCD_1602_SDA_Pin GPIO_PIN_9
 #define LCD_1602_SDA_GPIO_Port GPIOB
-#define EN_Pin GPIO_PIN_15
-#define EN_GPIO_Port GPIOC
+#define StartKey_Pin GPIO_PIN_15
+#define StartKey_GPIO_Port GPIOC
 #define ZIF1_Pin GPIO_PIN_0
 #define ZIF1_GPIO_Port GPIOA
 #define ZIF2_Pin GPIO_PIN_1
