@@ -57,12 +57,6 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define ZIF_13_Pin GPIO_PIN_13
-#define ZIF_13_GPIO_Port GPIOC
-#define ZIF12_Pin GPIO_PIN_14
-#define ZIF12_GPIO_Port GPIOC
-#define ZIF11_Pin GPIO_PIN_15
-#define ZIF11_GPIO_Port GPIOC
 #define ZIF10_Pin GPIO_PIN_0
 #define ZIF10_GPIO_Port GPIOA
 #define ZIF9_Pin GPIO_PIN_1
@@ -81,6 +75,12 @@ void Error_Handler(void);
 #define ZIF2_GPIO_Port GPIOA
 #define ZIF1_Pin GPIO_PIN_0
 #define ZIF1_GPIO_Port GPIOB
+#define ZIF13_Pin GPIO_PIN_1
+#define ZIF13_GPIO_Port GPIOB
+#define ZIF12_Pin GPIO_PIN_2
+#define ZIF12_GPIO_Port GPIOB
+#define ZIF11_Pin GPIO_PIN_10
+#define ZIF11_GPIO_Port GPIOB
 #define LCD_1602_SCL_Pin GPIO_PIN_6
 #define LCD_1602_SCL_GPIO_Port GPIOB
 #define LCD_1602_SDA_Pin GPIO_PIN_7
